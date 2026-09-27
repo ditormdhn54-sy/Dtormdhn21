@@ -1,0 +1,444 @@
+openapi: 3.0.3
+info:
+  title: Camera Mask Detection API
+  version: 1.0.0-draft
+  description: |
+    REST API untuk sistem deteksi wajah dan klasifikasi status masker dari live feed kamera.
+    Dirancang untuk petugas keamanan (real-time monitoring) dan manajemen gedung (logging & pelaporan).
+    Backend: FastAPI (Python) + PostgreSQL.
+    Tidak menyimpan raw image (NFR-05).
+    [ASUMSI-01] Autentikasi belum didefinisikan di LLD; diasumsikan bearer token (JWT) untuk endpoint yang membutuhkan proteksi.
+    [ASUMSI-02] Endpoint /api/camera-sessions mengembalikan session_id untuk digunakan pada request deteksi berikutnya.
+    [ASUMSI-03] Endpoint /api/detections menerima frame sebagai binary (multipart) atau base64; diasumsikan multipart/form-data.
+
+servers:
+  - url: http://localhost:8000
+    description: Development server
+  - url: https://api.example.com
+    description: Production server (placeholder)
+
+tags:
+  - name: Camera
+    description: Operasi terkait sesi kamera
+  - name: AI
+    description: Endpoint yang melibatkan pipeline AI (deteksi wajah & klasifikasi masker)
+  - name: Detection Logs
+    description: Penyimpanan dan pengelolaan log hasil deteksi
+
+paths:
+  /api/camera-sessions:
+    post:
+      tags:
+        - Camera
+      summary: Mulai sesi kamera
+      description: |
+        Memulai sesi kamera untuk live feed deteksi (FR-01, FR-08).
+        Mengembalikan session_id jika berhasil.
+        [ASUMSI-04] Request body opsional; jika camera_id tidak dikirim, sistem menggunakan kamera default.
+      operationId: startCameraSession
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CameraStartRequest'
+      responses:
+        '200':
+          description: Sesi kamera berhasil dimulai
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraStartResponse'
+        '403':
+          description: Izin kamera ditolak
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: CAMERA_PERMISSION_DENIED
+                message: Camera permission denied
+        '404':
+          description: Kamera tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: CAMERA_NOT_FOUND
+                message: Camera device not found
+        '500':
+          description: Gagal memulai kamera
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: CAMERA_START_FAILED
+                message: Failed to start camera session
+
+  /api/detections:
+    post:
+      tags:
+        - AI
+      summary: Kirim frame untuk deteksi wajah dan klasifikasi masker
+      description: |
+        Menerima frame dari live feed, menjalankan pipeline AI (face detection + mask classification),
+        dan mengembalikan array hasil deteksi secara real-time (FR-01, FR-02, FR-05).
+        [ASUMSI-05] session_id dari /api/camera-sessions wajib disertakan untuk mengaitkan frame dengan sesi aktif.
+      operationId: processDetectionFrame
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/DetectionRequest'
+      responses:
+        '200':
+          description: Hasil deteksi berhasil diproses
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetectionResponse'
+        '400':
+          description: Frame tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: INVALID_FRAME
+                message: Invalid or corrupted frame data
+        '408':
+          description: Timeout proses inference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: INFERENCE_TIMEOUT
+                message: AI inference timed out
+        '422':
+          description: Input tidak valid (validasi schema)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: INVALID_INPUT
+                message: Validation error on request body
+        '500':
+          description: Kegagalan internal AI pipeline
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                face_detection_failed:
+                  value:
+                    error_code: FACE_DETECTION_FAILED
+                    message: Face detection pipeline failed
+                mask_classification_failed:
+                  value:
+                    error_code: MASK_CLASSIFICATION_FAILED
+                    message: Mask classification pipeline failed
+        '503':
+          description: Layanan AI tidak tersedia
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: AI_SERVICE_UNAVAILABLE
+                message: AI service temporarily unavailable
+
+  /api/detection-logs:
+    post:
+      tags:
+        - Detection Logs
+      summary: Simpan hasil klasifikasi valid ke log
+      description: |
+        Menyimpan hasil deteksi yang valid ke tabel detection_logs untuk keperluan pelaporan (FR-06).
+        Tidak menyimpan raw image.
+      operationId: createDetectionLog
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetectionLogCreate'
+      responses:
+        '201':
+          description: Log berhasil disimpan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetectionLog'
+        '400':
+          description: Data log tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: INVALID_LOG_DATA
+                message: Invalid log payload
+        '422':
+          description: Validasi schema gagal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: VALIDATION_ERROR
+                message: Request body validation failed
+        '500':
+          description: Gagal menyimpan log
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: LOG_SAVE_FAILED
+                message: Failed to persist detection log
+        '503':
+          description: Database tidak tersedia
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: DATABASE_UNAVAILABLE
+                message: Database connection unavailable
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        [ASUMSI-01] Bearer JWT. Belum didefinisikan di LLD; placeholder untuk proteksi endpoint.
+
+  schemas:
+    CameraStartRequest:
+      type: object
+      properties:
+        camera_id:
+          type: string
+          description: Identifier kamera (opsional). Jika kosong, gunakan default.
+          example: cam-lobby-01
+        resolution:
+          type: string
+          description: Preferensi resolusi (opsional)
+          example: 1280x720
+      additionalProperties: false
+
+    CameraStartResponse:
+      type: object
+      required:
+        - session_id
+        - status
+      properties:
+        session_id:
+          type: string
+          format: uuid
+          description: ID sesi kamera aktif
+          example: 550e8400-e29b-41d4-a716-446655440000
+        status:
+          type: string
+          enum: [STARTED]
+          example: STARTED
+        camera_id:
+          type: string
+          example: cam-lobby-01
+        started_at:
+          type: string
+          format: date-time
+          example: "2026-09-27T12:46:00Z"
+
+    DetectionRequest:
+      type: object
+      required:
+        - session_id
+        - frame
+      properties:
+        session_id:
+          type: string
+          format: uuid
+          description: Session ID dari /api/camera-sessions
+        frame:
+          type: string
+          format: binary
+          description: Frame image (JPEG/PNG)
+        # [ASUMSI-06] Field tambahan opsional untuk metadata frame
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp frame dari client (opsional)
+
+    DetectionResponse:
+      type: object
+      required:
+        - detections
+        - processed_at
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        processed_at:
+          type: string
+          format: date-time
+        detections:
+          type: array
+          items:
+            $ref: '#/components/schemas/DetectionResult'
+          description: Array hasil deteksi wajah + status masker
+
+    DetectionResult:
+      type: object
+      required:
+        - face_id
+        - mask_status
+        - confidence
+        - bounding_box
+      properties:
+        face_id:
+          type: string
+          description: Identifier sementara untuk wajah dalam frame
+          example: face-001
+        mask_status:
+          $ref: '#/components/schemas/MaskStatus'
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Confidence score klasifikasi masker
+          example: 0.94
+        bounding_box:
+          $ref: '#/components/schemas/BoundingBox'
+        gender:
+          type: string
+          nullable: true
+          description: Prediksi gender (opsional, nullable)
+          example: male
+        age_range:
+          type: string
+          nullable: true
+          description: Prediksi rentang usia (opsional, nullable)
+          example: 25-34
+
+    BoundingBox:
+      type: object
+      required:
+        - x
+        - y
+        - width
+        - height
+      properties:
+        x:
+          type: number
+          format: float
+          description: Koordinat kiri atas (normalized 0-1 atau pixel)
+        y:
+          type: number
+          format: float
+        width:
+          type: number
+          format: float
+        height:
+          type: number
+          format: float
+
+    DetectionLogCreate:
+      type: object
+      required:
+        - timestamp
+        - mask_status
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Waktu deteksi
+        mask_status:
+          $ref: '#/components/schemas/MaskStatus'
+        gender:
+          type: string
+          nullable: true
+          description: Gender (nullable)
+        age_range:
+          type: string
+          nullable: true
+          description: Rentang usia (nullable)
+        session_id:
+          type: string
+          format: uuid
+          description: Opsional, untuk korelasikan dengan sesi kamera
+          nullable: true
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Confidence score (opsional untuk audit)
+          nullable: true
+
+    DetectionLog:
+      type: object
+      required:
+        - id
+        - timestamp
+        - mask_status
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Primary key
+        timestamp:
+          type: string
+          format: date-time
+        mask_status:
+          $ref: '#/components/schemas/MaskStatus'
+        gender:
+          type: string
+          nullable: true
+        age_range:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          description: Waktu record disimpan di database
+
+    MaskStatus:
+      type: string
+      enum:
+        - MASK
+        - NO_MASK
+        - UNCERTAIN
+      description: Status klasifikasi masker
+
+    ErrorResponse:
+      type: object
+      required:
+        - error_code
+        - message
+      properties:
+        error_code:
+          type: string
+          description: Kode error spesifik (sesuai LLD)
+        message:
+          type: string
+          description: Pesan human-readable
+        details:
+          type: object
+          additionalProperties: true
+          description: Detail tambahan (opsional)
+          nullable: true
